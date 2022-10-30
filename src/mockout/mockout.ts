@@ -27,25 +27,47 @@ export interface Computed<T = any> extends PublicComputed<T> {
   _fnString: string;
 }
 
-type Reactive = Computed | Observable;
+type Subscribable = Computed | Observable;
 
 interface Binding {
   name: string;
+  type: 'text';
   element: Element;
-  getValue: Reactive;
+  subscribable: Subscribable;
   dependencies: string[];
 }
 
-export type ViewModel = Record<string, Reactive>;
+export type ViewModel = Record<string, Subscribable>;
 
 type BindingRecord = Record<string, Binding>;
 
 const bindingRecord: BindingRecord = {};
 
+/**
+ * This is the "core" algorithm that uses Breadth First Search
+ * to update dependencies. Its iterates through the `bindingRecord`,
+ * to update elements, then adds all the dependencies to the update queue.
+ */
+const updateBindings = (bindingsToUpdate: string[]) => {
+  const updateQueue = [...bindingsToUpdate];
+  while (updateQueue.length > 0) {
+    const binding = bindingRecord[updateQueue.shift()!];
+    const { dependencies, element, subscribable } = binding;
+    updateQueue.push(...dependencies);
+
+    if (element) {
+      element.innerHTML = String(subscribable());
+    }
+  }
+};
+
+/**
+ * Initializes the binding record with all the dependencies.
+ */
 const mapAllDependencies = () => {
   /**
    * This just searches variable names in the function text.
-   * It's most definiely the wrong way to determine dependencies.
+   * It's most definitely the wrong way to determine dependencies.
    * Knockout uses a combination of `arguments`, and requires dependencies
    * to be linked via `this`.
    */
@@ -61,36 +83,23 @@ const mapAllDependencies = () => {
 
   const bindingsToUpdate: string[] = [];
 
-  Object.values(bindingRecord).forEach(({ getValue }) => {
-    // Base observables have no dependencies
-    // But set them up to be updated
-    if (getValue._type === 'observable') {
-      bindingsToUpdate.push(getValue._id);
+  Object.values(bindingRecord).forEach(({ subscribable }) => {
+    // Base observables have no dependencies,
+    // but need to be setup for initial updates.
+    if (subscribable._type === 'observable') {
+      bindingsToUpdate.push(subscribable._id);
       return;
     }
 
-    addDependency(getValue);
+    addDependency(subscribable);
   });
 
   updateBindings(bindingsToUpdate);
 };
 
 /**
- * Breadth First Search for updating dependencies
+ * Rough equivalent of `ko.applyBindings`. Currently only accepts `text` bindings.
  */
-const updateBindings = (bindingsToUpdate: string[]) => {
-  const queue = [...bindingsToUpdate];
-  while (queue.length > 0) {
-    const binding = bindingRecord[queue.shift()!];
-    const { dependencies, element, getValue } = binding;
-    queue.push(...dependencies);
-
-    if (element) {
-      element.innerHTML = String(getValue());
-    }
-  }
-};
-
 export const applyBindings = (vm: ViewModel) => {
   const elementsWithDataBind =
     document.querySelectorAll<MockoutElement>('[data-bind]');
@@ -108,8 +117,9 @@ export const applyBindings = (vm: ViewModel) => {
 
     bindingRecord[binding._id] = {
       name: bindingName,
+      type: 'text',
       element,
-      getValue: binding,
+      subscribable: binding,
       dependencies: [],
     };
   });
@@ -117,6 +127,11 @@ export const applyBindings = (vm: ViewModel) => {
   mapAllDependencies();
 };
 
+/**
+ * Rough equivalent of `ko.observable`.
+ * Will be exported as `observable`, but is named differently here
+ * to prevent ambiguity.
+ */
 export const createObservable = <T = any>(initValue?: T) => {
   let currentValue: T | undefined = initValue;
   const _id = uuid();
@@ -141,6 +156,12 @@ export const createObservable = <T = any>(initValue?: T) => {
   return observable;
 };
 
+/**
+ * Rough equivalent of `ko.computed`.
+ * This implementation searches through the actual function `toString` contents
+ * to determine dependencies, which is **very** incorrect, but is good enough
+ * for demo purposes.
+ */
 export const createComputed = <T = any>(fn: () => T) => {
   const computed = (() => {
     return fn();
